@@ -17,16 +17,17 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
 ENTRY, PLAYER_MOVE = range(2)
+END = ConversationHandler.END
 
 class TicTacToeTWGBot():
     def __init__(self, token):
         self.user_storage = dict()
+        self.score_storage = defaultdict(lambda : {'wins': 0, 'losses': 0})
         self.app = ApplicationBuilder().token(token).build()
         conversation_handler = ConversationHandler(
             entry_points=[CommandHandler('play', self.init_game)],
@@ -35,7 +36,8 @@ class TicTacToeTWGBot():
                 PLAYER_MOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_human_input)],
             },
             fallbacks=[CommandHandler('cancel', self.cancel)],
-            allow_reentry=True
+            allow_reentry=True,
+            map_to_parent={END: END},
         )
         start_handler = CommandHandler('start', self.start)
 
@@ -56,7 +58,7 @@ class TicTacToeTWGBot():
             curPlayer = 1
         )
         logger.info(f'initalized for user {update.message.from_user.username}')
-        await update.message.reply_text('Game loaded. Type anything to continue. Type /cancel if you want to end the game')
+        await update.message.reply_text(f'Game loaded. Your current score is {self.score_storage[user_id]}. Type anything to continue. Type /cancel if you want to end the game')
         return ENTRY
 
     async def run_game(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -64,7 +66,7 @@ class TicTacToeTWGBot():
         user_data = self.get_user_data(update)
         if len(user_data) == 0:
             await update.message.reply_text('Sorry, sosmething went wrong :(')
-            return ConversationHandler.END
+            return END
         string_board = np.array2string(user_data['display'](user_data['board']))
         await update.message.reply_text(string_board)
         valids = user_data['game'].getValidMoves(user_data['game'].getCanonicalForm(user_data['board'], user_data['curPlayer']), user_data['curPlayer'])
@@ -84,10 +86,15 @@ class TicTacToeTWGBot():
         else:
             if game_status == 1:
                 await update.message.reply_text('You won!')
+                self.score_storage[update.message.from_user.id]['wins'] += 1
+                logger.info(f'{update.message.from_user.username} won!')
             else:
                 await update.message.reply_text('Humanity is doomed! Game over! ')
-            return ConversationHandler.END
-        return ConversationHandler.END
+                self.score_storage[update.message.from_user.id]['wins'] += 0
+                logger.info(f'{update.message.from_user.username} lost!')
+            await update.message.reply_text(f'Your score is {self.score_storage[update.message.from_user.id]}')
+            return END
+        return END
         
     async def process_ai(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_data) -> int:
         """Handle the ai's moves."""
@@ -105,7 +112,9 @@ class TicTacToeTWGBot():
         user_data = self.get_user_data(update)
         if len(user_data) == 0:
             await update.message.reply_text('Sorry, sosmething went wrong :(')
-            return ConversationHandler.END
+            return END
+        if user_data['game'].getGameEnded(user_data['board'], 1) != 0:
+            return END
         user_input = update.message.text
         valids = user_data['game'].getValidMoves(user_data['game'].getCanonicalForm(user_data['board'], user_data['curPlayer']), user_data['curPlayer'])
         try:
@@ -124,7 +133,7 @@ class TicTacToeTWGBot():
     async def cancel(self, update: Update, context: CallbackContext) -> int:
         """Allow the user to cancel the conversation."""
         await update.message.reply_text('Game cancelled.')
-        return ConversationHandler.END
+        return END
     
     async def start(self, update: Update, context: CallbackContext):
         await update.message.reply_text('Hello! You can play tictactoe on torus with gravity with me if you type /play.')
@@ -132,7 +141,6 @@ class TicTacToeTWGBot():
     def get_user_data(self, update):
         user_id = update.message.from_user.id
         if self.user_storage[user_id]:
-            # logger.info(self.user_storage[user_id])
             return self.user_storage[user_id]
         else:
             logger.error('Something went wrong! No such user in memory!')
